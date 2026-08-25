@@ -101,7 +101,7 @@ static bool https_open(const char* method, const char* host, const char* path, c
     }
 
     {
-        char reqHeader[1536];
+        char reqHeader[2560];
         int headerLen = snprintf(reqHeader, sizeof(reqHeader),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"

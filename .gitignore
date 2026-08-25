@@ -26,4 +26,4 @@ rom-sync/*.3dsx
 rom-sync/*.elf
 rom-sync/*.smdh
 rom-sync/*.map
-rom-sync/include/config.h
+rom-sync/include/DriveServiceAccount.h

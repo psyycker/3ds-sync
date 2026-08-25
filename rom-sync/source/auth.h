@@ -2,10 +2,15 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-// Ensures we have a valid access token, printing progress to the console.
-// If a refresh token is already saved on the SD card, silently exchanges it
-// for a fresh access token. Otherwise runs the full interactive OAuth
-// device flow (prints a URL + code, polls until approved) and saves the
-// resulting refresh token to the SD card for next time.
+// Gets a fresh Drive access token for the service account configured in
+// DriveServiceAccount.h - the same one save-sync/checkpoint uses. Builds and
+// RS256-signs a JWT with the service account's private key and exchanges it
+// with Google for an access token (JWT-bearer grant). No interactive sign-in
+// and nothing persisted to the SD card: this runs once per launch and the
+// token is good for an hour.
+//
+// Note: a service account has no access to your Drive files by default -
+// you must share the folders/files you want to sync with the service
+// account's client email address (the same one save-sync uses) first.
 // accessToken must be at least 2048 bytes.
 bool auth_get_access_token(char* accessToken, size_t accessTokenSize);

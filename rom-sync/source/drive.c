@@ -52,13 +52,13 @@ static bool find_child_by_name(const char* accessToken, const char* parentId, co
     char escapedName[384];
     escape_for_query(escapedName, sizeof(escapedName), name);
 
-    char q[512];
+    char q[600];
     snprintf(q, sizeof(q), "'%s' in parents and name = '%s' and trashed = false", parentId, escapedName);
 
-    char qEncoded[1024];
+    char qEncoded[1900];
     url_encode_into(qEncoded, sizeof(qEncoded), q);
 
-    char path[1200];
+    char path[2000];
     snprintf(path, sizeof(path), "/drive/v3/files?q=%s&fields=files(id,name,mimeType)&pageSize=1", qEncoded);
 
     if (!https_request("GET", DRIVE_HOST, path, authHeader, NULL, 0, respbuf, sizeof(respbuf), NULL))
