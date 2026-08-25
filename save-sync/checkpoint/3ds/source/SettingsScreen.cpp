@@ -484,7 +484,7 @@ void SettingsScreen::drawAbout(void) const
     C2D_PlainImageTint(&brandTint, COLOR_ACCENT, 1.0f);
     C2D_DrawImageAt(flag, 20, 36, 0.5f, &brandTint, 1.0f, 1.0f);
     float x = 20 + ceilf(flag.subtex->width * 1.0f) + 8;
-    TextPool::get().draw("Checkpoint", x, 34, 0.62f, COLOR_TEXT);
+    TextPool::get().draw("SaveSync", x, 34, 0.62f, COLOR_TEXT);
     TextPool::get().draw(ver, x, 54, 0.42f, COLOR_FAINT);
 
     int y     = 82;

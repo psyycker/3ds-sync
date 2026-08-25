@@ -31,8 +31,8 @@ include $(DEVKITARM)/3ds_rules
 #     - icon.png
 #     - <libctru folder>/default_icon.png
 #---------------------------------------------------------------------------------
-APP_TITLE		:= 	Checkpoint
-APP_DESCRIPTION	:=	Checkpoint: save manager
+APP_TITLE		:= 	SaveSync
+APP_DESCRIPTION	:=	SaveSync: Google Drive save sync (Checkpoint fork)
 APP_AUTHOR		:=	Bernardo Giordano, FlagBrew
 
 TARGET			:=	$(subst $e ,_,$(notdir $(APP_TITLE)))

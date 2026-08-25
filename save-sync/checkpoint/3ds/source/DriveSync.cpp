@@ -104,6 +104,129 @@ namespace {
         return true;
     }
 
+    // Everything syncTitle()/resolveConflict() need to touch a tagged title:
+    // its Drive tag and its Title record. Not the BackupTarget too - it holds
+    // a Title& reference, which rules out storing it alongside the Title it
+    // points at in a struct that also needs to be default-constructed and
+    // assigned into (see loadTaggedTitle()'s out-param below); callers build
+    // one locally off `title` instead, right where they need it.
+    struct TaggedTitle {
+        DriveSyncConfig::TitleTag tag;
+        Title title;
+    };
+
+    // Every failure mode here returns the exact string syncTitle()/
+    // resolveConflict() hand back as their Outcome message.
+    bool loadTaggedTitle(uint64_t titleId, TaggedTitle& out, std::string& error)
+    {
+        auto tagOpt = DriveSyncConfig::titleTag(titleId);
+        if (!tagOpt) {
+            error = "This title isn't tagged yet.";
+            return false;
+        }
+        out.tag = *tagOpt;
+
+        if (out.tag.category == DriveSyncConfig::Category::ThreeDs) {
+            error = "3DS sync isn't built yet - only GB/GBC, GBA and NDS for now.";
+            return false;
+        }
+        if (out.tag.driveFileId.empty()) {
+            error = "No paired Drive file - retag this title.";
+            return false;
+        }
+
+        if (!TitleCatalog::get().getTitleById(out.title, titleId)) {
+            error = "Could not find this title in the catalog.";
+            return false;
+        }
+        return true;
+    }
+
+    // Stages the console's current save for `target` into TMP_DIR_REL (fresh
+    // each call - drops any stale leftovers first) and reads it back out.
+    // `outFileName16` is the one staged file's name, which doDownload() needs
+    // in order to know what to overwrite before restoring.
+    bool stageLocalSave(const BackupTarget& target, std::string& outContent, std::u16string& outFileName16, std::string& error)
+    {
+        io::deleteFolderRecursively(Archive::sdmc(), StringUtils::UTF8toUTF16(TMP_DIR_REL));
+        io::createDirectory(Archive::sdmc(), StringUtils::UTF8toUTF16(TMP_DIR_REL));
+
+        NullProgressSink sink;
+        io::IoOutcome backupOutcome = io::backup(target, StringUtils::UTF8toUTF16(TMP_DIR_REL), sink);
+        if (!backupOutcome.ok) {
+            error = "Could not read the save off this title.";
+            return false;
+        }
+
+        if (!findSingleTempFile(outFileName16, error)) {
+            return false;
+        }
+        std::string localPath = std::string(TMP_DIR_SD) + "/" + StringUtils::UTF16toUTF8(outFileName16);
+        if (!readFile(localPath, outContent)) {
+            error = "Could not read the staged save file.";
+            return false;
+        }
+        return true;
+    }
+
+    // Uploads `localContent` (already staged) to this title's paired Drive
+    // file and records the sync. Shared by syncTitle()'s plain-upload branch
+    // and resolveConflict()'s "keep the console's save" choice.
+    bool doUpload(uint64_t titleId, const std::string& accessToken, DriveSyncConfig::TitleTag tag, const std::string& localContent, std::string& error)
+    {
+        if (!DriveApi::updateFileContent(accessToken, tag.driveFileId, localContent)) {
+            error = "Upload to Drive failed.";
+            return false;
+        }
+        tag.lastSyncedMd5     = hexMd5(localContent);
+        tag.lastSyncedAt      = time(nullptr);
+        tag.lastSyncDirection = "uploaded";
+        DriveSyncConfig::setTitleTag(titleId, tag);
+        return true;
+    }
+
+    // Downloads this title's paired Drive file and writes it onto the
+    // console, overwriting whatever's staged at TMP_DIR_REL/`fileName16`
+    // (the caller must have staged first via stageLocalSave, so the folder
+    // holds exactly one, correctly-named entry for io::restore to pick up).
+    // Shared by syncTitle()'s plain-download branch and resolveConflict()'s
+    // "keep the Drive save" choice.
+    bool doDownload(uint64_t titleId, const std::string& accessToken, DriveSyncConfig::TitleTag tag, const BackupTarget& target,
+        const std::u16string& fileName16, std::string& error)
+    {
+        std::string remoteContent;
+        if (!DriveApi::downloadFile(accessToken, tag.driveFileId, remoteContent)) {
+            error = "Download from Drive failed.";
+            return false;
+        }
+        std::string localPath = std::string(TMP_DIR_SD) + "/" + StringUtils::UTF16toUTF8(fileName16);
+        if (!writeFile(localPath, remoteContent)) {
+            error = "Could not stage the downloaded save.";
+            return false;
+        }
+
+        // Safety net before overwriting the console-side save: a normal
+        // Checkpoint backup slot (so it's restorable through Checkpoint's own
+        // Backup/Restore UI, no Drive-sync-specific recovery tool needed),
+        // holding whatever was on the title immediately before this pull.
+        // Always the same slot name - only the most recent pre-pull state is
+        // kept, not an accumulating pile.
+        NullProgressSink sink;
+        std::u16string safetyPath = target.rootPath() + u"/[drive-sync-safety]";
+        io::backup(target, safetyPath, sink); // best-effort: a failure here must not block the pull
+
+        io::IoOutcome restoreOutcome = io::restore(target, StringUtils::UTF8toUTF16(TMP_DIR_REL), sink);
+        if (!restoreOutcome.ok) {
+            error = "Writing the downloaded save to this title failed.";
+            return false;
+        }
+        tag.lastSyncedMd5     = hexMd5(remoteContent);
+        tag.lastSyncedAt      = time(nullptr);
+        tag.lastSyncDirection = "downloaded";
+        DriveSyncConfig::setTitleTag(titleId, tag);
+        return true;
+    }
+
     constexpr const char* NDS_ROMS_ROOT = "sdmc:/roms/nds";
 
     bool isJunkFile(const char* name)
@@ -159,59 +282,45 @@ namespace {
 namespace DriveSync {
     Outcome syncTitle(uint64_t titleId, const std::string& accessToken)
     {
-        auto tagOpt = DriveSyncConfig::titleTag(titleId);
-        if (!tagOpt) {
-            return { false, "This title isn't tagged yet." };
+        TaggedTitle tt;
+        std::string error;
+        if (!loadTaggedTitle(titleId, tt, error)) {
+            return { false, error };
         }
-        DriveSyncConfig::TitleTag tag = *tagOpt;
-
-        if (tag.category == DriveSyncConfig::Category::ThreeDs) {
-            return { false, "3DS sync isn't built yet - only GB/GBC, GBA and NDS for now." };
-        }
-        if (tag.driveFileId.empty()) {
-            return { false, "No paired Drive file - retag this title." };
-        }
-
-        Title title;
-        if (!TitleCatalog::get().getTitleById(title, titleId)) {
-            return { false, "Could not find this title in the catalog." };
-        }
-        BackupTarget target = title.backup(BackupKind::Save);
+        BackupTarget target = tt.title.backup(BackupKind::Save);
 
         // Stage the console-side save into a plain SD folder via Checkpoint's
         // own (well-tested) backup path - never touch the save archive
-        // directly ourselves. Fresh each run: drop any stale leftovers first.
-        io::deleteFolderRecursively(Archive::sdmc(), StringUtils::UTF8toUTF16(TMP_DIR_REL));
-        io::createDirectory(Archive::sdmc(), StringUtils::UTF8toUTF16(TMP_DIR_REL));
-
-        NullProgressSink sink;
-        io::IoOutcome backupOutcome = io::backup(target, StringUtils::UTF8toUTF16(TMP_DIR_REL), sink);
-        if (!backupOutcome.ok) {
-            return { false, "Could not read the save off this title." };
-        }
-
-        std::u16string fileName16;
-        std::string findError;
-        if (!findSingleTempFile(fileName16, findError)) {
-            return { false, findError };
-        }
-        std::string fileName = StringUtils::UTF16toUTF8(fileName16);
-        std::string localPath = std::string(TMP_DIR_SD) + "/" + fileName;
-
+        // directly ourselves.
         std::string localContent;
-        if (!readFile(localPath, localContent)) {
-            return { false, "Could not read the staged save file." };
+        std::u16string fileName16;
+        if (!stageLocalSave(target, localContent, fileName16, error)) {
+            return { false, error };
         }
         std::string localMd5 = hexMd5(localContent);
 
         std::string remoteMd5;
-        bool haveRemoteMd5 = DriveApi::getFileMd5(accessToken, tag.driveFileId, remoteMd5);
-        if (!haveRemoteMd5) {
+        if (!DriveApi::getFileMd5(accessToken, tt.tag.driveFileId, remoteMd5)) {
             return { false, "Could not reach Drive to check the remote save." };
         }
 
-        bool localChanged  = localMd5 != tag.lastSyncedMd5;
-        bool remoteChanged = remoteMd5 != tag.lastSyncedMd5;
+        bool localChanged  = localMd5 != tt.tag.lastSyncedMd5;
+        bool remoteChanged = remoteMd5 != tt.tag.lastSyncedMd5;
+
+        // A brand-new pairing (lastSyncedMd5 empty) has no real baseline, so
+        // localChanged/remoteChanged both come back true whenever either side
+        // is non-empty - that would otherwise fall into the conflict branch
+        // below and risk overwriting a real Drive save with whatever the
+        // console currently holds (e.g. a game's freshly auto-created,
+        // still-empty save on first boot). Treat a first sync against an
+        // already-populated remote file as a pull instead: pairing to an
+        // existing file almost always means "bring this save onto the
+        // console," not "erase it." Only fall through to the normal push/pull
+        // logic when the remote file is itself blank (a newly created Drive
+        // file), which is the genuine "push my save up for the first time" case.
+        if (tt.tag.lastSyncedMd5.empty() && remoteChanged && remoteMd5 != hexMd5("")) {
+            localChanged = false;
+        }
 
         Outcome outcome;
 
@@ -219,57 +328,59 @@ namespace DriveSync {
             outcome = { true, "Already up to date." };
         }
         else if (localChanged && !remoteChanged) {
-            if (!DriveApi::updateFileContent(accessToken, tag.driveFileId, localContent)) {
-                return { false, "Upload to Drive failed." };
+            if (!doUpload(titleId, accessToken, tt.tag, localContent, error)) {
+                return { false, error };
             }
-            tag.lastSyncedMd5     = localMd5;
-            tag.lastSyncedAt      = time(nullptr);
-            tag.lastSyncDirection = "uploaded";
-            outcome               = { true, "Uploaded to Drive." };
+            outcome = { true, "Uploaded to Drive." };
         }
         else if (!localChanged && remoteChanged) {
-            std::string remoteContent;
-            if (!DriveApi::downloadFile(accessToken, tag.driveFileId, remoteContent)) {
-                return { false, "Download from Drive failed." };
+            if (!doDownload(titleId, accessToken, tt.tag, target, fileName16, error)) {
+                return { false, error };
             }
-            if (!writeFile(localPath, remoteContent)) {
-                return { false, "Could not stage the downloaded save." };
-            }
-
-            // Safety net before overwriting the console-side save: a normal
-            // Checkpoint backup slot (so it's restorable through Checkpoint's
-            // own Backup/Restore UI, no Drive-sync-specific recovery tool
-            // needed), holding whatever was on the title immediately before
-            // this pull. Always the same slot name - only the most recent
-            // pre-pull state is kept, not an accumulating pile.
-            std::u16string safetyPath = target.rootPath() + u"/[drive-sync-safety]";
-            io::backup(target, safetyPath, sink); // best-effort: a failure here must not block the pull
-
-            io::IoOutcome restoreOutcome = io::restore(target, StringUtils::UTF8toUTF16(TMP_DIR_REL), sink);
-            if (!restoreOutcome.ok) {
-                return { false, "Writing the downloaded save to this title failed." };
-            }
-            tag.lastSyncedMd5     = remoteMd5;
-            tag.lastSyncedAt      = time(nullptr);
-            tag.lastSyncDirection = "downloaded";
-            outcome               = { true, "Downloaded from Drive." };
+            outcome = { true, "Downloaded from Drive." };
         }
         else {
-            // Both sides changed since the last sync - a genuine conflict.
-            // No signal here says which change is "right", so this favors
-            // whichever save the user is holding in their hands right now
-            // (the console they're actively syncing from) rather than
-            // silently discarding it in favor of Drive.
-            if (!DriveApi::updateFileContent(accessToken, tag.driveFileId, localContent)) {
-                return { false, "Upload to Drive failed." };
-            }
-            tag.lastSyncedMd5     = localMd5;
-            tag.lastSyncedAt      = time(nullptr);
-            tag.lastSyncDirection = "uploaded";
-            outcome               = { true, "Both sides had changed - kept this console's save (uploaded)." };
+            // Both sides changed since the last sync, against a real
+            // baseline - a genuine conflict, and unlike the old behavior this
+            // no longer silently guesses. Nothing has been written on either
+            // side; leave it to the caller to ask the user and come back
+            // through resolveConflict() with their choice.
+            return { false, "Both the console's save and the Drive save have changed since the last sync. Which one do you want to keep?", true };
         }
 
-        DriveSyncConfig::setTitleTag(titleId, tag);
+        io::deleteFolderRecursively(Archive::sdmc(), StringUtils::UTF8toUTF16(TMP_DIR_REL));
+        return outcome;
+    }
+
+    Outcome resolveConflict(uint64_t titleId, const std::string& accessToken, bool uploadLocal)
+    {
+        TaggedTitle tt;
+        std::string error;
+        if (!loadTaggedTitle(titleId, tt, error)) {
+            return { false, error };
+        }
+        BackupTarget target = tt.title.backup(BackupKind::Save);
+
+        std::string localContent;
+        std::u16string fileName16;
+        if (!stageLocalSave(target, localContent, fileName16, error)) {
+            return { false, error };
+        }
+
+        Outcome outcome;
+        if (uploadLocal) {
+            if (!doUpload(titleId, accessToken, tt.tag, localContent, error)) {
+                return { false, error };
+            }
+            outcome = { true, "Kept this console's save (uploaded)." };
+        }
+        else {
+            if (!doDownload(titleId, accessToken, tt.tag, target, fileName16, error)) {
+                return { false, error };
+            }
+            outcome = { true, "Kept the Drive save (downloaded)." };
+        }
+
         io::deleteFolderRecursively(Archive::sdmc(), StringUtils::UTF8toUTF16(TMP_DIR_REL));
         return outcome;
     }

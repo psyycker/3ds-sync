@@ -253,7 +253,7 @@ void MainScreen::drawTop(void) const
     C2D_PlainImageTint(&brandTint, COLOR_ACCENT, 1.0f);
     C2D_DrawImageAt(flag, 6, 3, 0.5f, &brandTint, 1.0f, 1.0f);
     float nameX = 6 + ceilf(flag.subtex->width * 1.0f) + 6;
-    nameX += text.draw("Checkpoint", nameX, 4, 0.5f, COLOR_TEXT) + 6;
+    nameX += text.draw("SaveSync", nameX, 4, 0.5f, COLOR_TEXT) + 6;
     text.draw(ver, nameX, 6, 0.4f, COLOR_FAINT);
 
     // Right cluster: time, count / multi-select badge.
