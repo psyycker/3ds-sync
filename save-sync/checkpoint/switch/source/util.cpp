@@ -1,0 +1,270 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2026 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#include "util.hpp"
+#include "configuration.hpp"
+#include "ftpserver.hpp"
+#include "i18n.hpp"
+#include "logging.hpp"
+#include "main.hpp"
+#include "mtpserver.hpp"
+#include "server.hpp"
+#include "sleepguard.hpp"
+#include "titlecatalog.hpp"
+
+namespace {
+    // FTP uses a command socket plus a short-lived data socket per concurrent
+    // transfer. The libnx defaults are sized for general client networking and
+    // can exhaust bsd:u's socket-buffer pool during a directory upload, leaving
+    // PASV listeners unable to accept and eventually timing out. Match the
+    // standalone Switch ftpd configuration, with one extra BSD service session
+    // for Checkpoint's HTTP/log and script traffic.
+    constexpr SocketInitConfig SOCKET_INIT_CONFIG = {
+        .tcp_tx_buf_size     = 1 * 1024 * 1024,
+        .tcp_rx_buf_size     = 1 * 1024 * 1024,
+        .tcp_tx_buf_max_size = 4 * 1024 * 1024,
+        .tcp_rx_buf_max_size = 4 * 1024 * 1024,
+        .udp_tx_buf_size     = 0x2400,
+        .udp_rx_buf_size     = 0xA500,
+        .sb_efficiency       = 8,
+        .num_bsd_sessions    = 3,
+        .bsd_service_type    = BsdServiceType_User,
+    };
+}
+
+void servicesExit(void)
+{
+    // Nothing is left running that needs the console awake; also covers a
+    // transfer that ended by an early exit path rather than TransferStatus::end.
+    SleepGuard::release();
+
+    // Stop and join the servers before socketExit tears the socket layer down
+    // under them, and before Logging::exit() closes the log they write to.
+    // FTPServer::exit() is normally already done at the end of main(); this
+    // covers the early-exit paths that call servicesExit() without reaching it.
+    FTPServer::exit();
+    MTPServer::exit();
+    Server::exit();
+    Logging::exit();
+    if (g_notificationLedAvailable)
+        hidsysExit();
+    pdmqryExit();
+    socketExit();
+    Account::exit();
+    TitleCatalog::get().freeIcons();
+    Gfx::Exit();
+    nsExit();
+    plExit();
+    romfsExit();
+}
+
+Result servicesInit(void)
+{
+    io::createDirectory("sdmc:/switch");
+    io::createDirectory("sdmc:/switch/Checkpoint");
+    io::createDirectory("sdmc:/switch/Checkpoint/saves");
+    io::createDirectory("sdmc:/switch/Checkpoint/bcat");
+    io::createDirectory("sdmc:/switch/Checkpoint/device");
+    io::createDirectory("sdmc:/switch/Checkpoint/system");
+    io::createDirectory("sdmc:/switch/Checkpoint/logs");
+    // Script drop-in point, so users find it (see Paths::scriptsRoot).
+    io::createDirectory("sdmc:/switch/Checkpoint/scripts");
+    io::createDirectory("sdmc:/switch/Checkpoint/scripts/universal");
+
+    // Sets the log file path and registers the /logs HTTP handlers (the shared
+    // logging module registers them under the SERVER_HPP guard); then open the
+    // file so /logs/file and on-disk logging work too.
+    Logging::init();
+    Logging::initFileLogging();
+    // Now that the log file is open, catch any uncaught throw with a disk
+    // breadcrumb before the process dies.
+    Logging::installCrashHandlers();
+
+    Logging::info("Starting Checkpoint loading...");
+
+    if (appletGetAppletType() != AppletType_Application) {
+        Logging::warning("Please do not run Checkpoint in applet mode.");
+    }
+
+    Result socinit = 0;
+    if ((socinit = socketInitialize(&SOCKET_INIT_CONFIG)) == 0) {
+        // nxlinkStdio();
+    }
+    else {
+        Logging::info("Unable to initialize socket. Result code 0x{:08X}.", socinit);
+    }
+
+    // The log server needs the socket layer up; skip it if socket init failed.
+    if (R_SUCCEEDED(socinit)) {
+        Server::init();
+    }
+
+    Result res = 0;
+
+    romfsInit();
+
+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    hidInitializeTouchScreen();
+
+    if (R_FAILED(res = plInitialize(PlServiceType_User))) {
+        Logging::error("plInitialize failed. Result code 0x{:08X}.", res);
+        return res;
+    }
+
+    if (R_FAILED(res = Account::init())) {
+        Logging::error("Account::init failed. Result code 0x{:08X}.", res);
+        return res;
+    }
+
+    if (R_FAILED(res = nsInitialize())) {
+        Logging::error("nsInitialize failed. Result code 0x{:08X}.", res);
+        return res;
+    }
+
+    if (!Gfx::Init()) {
+        Logging::error("Gfx::Init failed. Result code 0x{:08X}.", res);
+        return -1;
+    }
+
+    if (R_SUCCEEDED(res = hidsysInitialize())) {
+        g_notificationLedAvailable = true;
+    }
+    else {
+        Logging::info("Notification led not available. Result code 0x{:08X}.", res);
+    }
+
+    Configuration::getInstance();
+
+    // Load localized strings before any screen draws.
+    i18n::init("romfs:/i18n.json");
+    i18n::setLanguage(Configuration::getInstance().language());
+
+    if (R_SUCCEEDED(socinit)) {
+        FTPServer::init();
+    }
+
+    // MTP rides the USB cable, so unlike FTP it doesn't care whether the socket
+    // layer came up. The worker idles until the toggle is switched on.
+    MTPServer::init();
+
+    if (R_SUCCEEDED(res = pdmqryInitialize())) {}
+    else {
+        Logging::warning("pdmqryInitialize failed with result 0x{:08X}.", res);
+    }
+
+    Logging::info("Checkpoint loading completed!");
+
+    return 0;
+}
+
+std::u16string StringUtils::UTF8toUTF16(const char* src)
+{
+    const uint8_t* in = (const uint8_t*)src;
+    ssize_t units     = utf8_to_utf16(nullptr, in, 0);
+    if (units < 0) {
+        return u"";
+    }
+    std::u16string dst(units, u'\0');
+    utf8_to_utf16((uint16_t*)dst.data(), in, units + 1);
+    return dst;
+}
+
+std::string StringUtils::UTF16toUTF8(const std::u16string& src)
+{
+    const uint16_t* in = (const uint16_t*)src.c_str();
+    ssize_t units      = utf16_to_utf8(nullptr, in, 0);
+    if (units < 0) {
+        return "";
+    }
+    std::string dst(units, '\0');
+    utf16_to_utf8((uint8_t*)dst.data(), in, units + 1);
+    return dst;
+}
+
+// https://stackoverflow.com/questions/14094621/change-all-accented-letters-to-normal-letters-in-c
+std::string StringUtils::removeAccents(std::string str)
+{
+    std::u16string src           = UTF8toUTF16(str.c_str());
+    const std::u16string illegal = UTF8toUTF16("ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüūýþÿ");
+    const std::u16string fixed   = UTF8toUTF16("AAAAAAECEEEEIIIIDNOOOOOx0UUUUYPsaaaaaaeceeeeiiiiOnooooo/0uuuuuypy");
+
+    for (size_t i = 0, sz = src.length(); i < sz; i++) {
+        size_t index = illegal.find(src[i]);
+        if (index != std::string::npos) {
+            src[i] = fixed[index];
+        }
+    }
+
+    return UTF16toUTF8(src);
+}
+
+std::string StringUtils::removeNotAscii(std::string str)
+{
+    for (size_t i = 0, sz = str.length(); i < sz; i++) {
+        if (!isascii(str[i])) {
+            str[i] = ' ';
+        }
+    }
+    return str;
+}
+
+HidsysNotificationLedPattern blinkLedPattern(u8 times)
+{
+    HidsysNotificationLedPattern pattern;
+    memset(&pattern, 0, sizeof(pattern));
+
+    pattern.baseMiniCycleDuration = 0x1;   // 12.5ms.
+    pattern.totalMiniCycles       = 0x2;   // 2 mini cycles.
+    pattern.totalFullCycles       = times; // Repeat n times.
+    pattern.startIntensity        = 0x0;   // 0%.
+
+    pattern.miniCycles[0].ledIntensity      = 0xF; // 100%.
+    pattern.miniCycles[0].transitionSteps   = 0xF; // 15 steps. Total 187.5ms.
+    pattern.miniCycles[0].finalStepDuration = 0x0; // Forced 12.5ms.
+    pattern.miniCycles[1].ledIntensity      = 0x0; // 0%.
+    pattern.miniCycles[1].transitionSteps   = 0xF; // 15 steps. Total 187.5ms.
+    pattern.miniCycles[1].finalStepDuration = 0x0; // Forced 12.5ms.
+
+    return pattern;
+}
+
+void blinkLed(u8 times)
+{
+    if (g_notificationLedAvailable) {
+        PadState pad;
+        padInitializeDefault(&pad);
+        s32 n;
+        HidsysUniquePadId uniquePadIds[2]    = {0};
+        HidsysNotificationLedPattern pattern = blinkLedPattern(times);
+        memset(uniquePadIds, 0, sizeof(uniquePadIds));
+        Result res = hidsysGetUniquePadsFromNpad(padIsHandheld(&pad) ? HidNpadIdType_Handheld : HidNpadIdType_No1, uniquePadIds, 2, &n);
+        if (R_SUCCEEDED(res)) {
+            for (s32 i = 0; i < n; i++) {
+                hidsysSetNotificationLedPattern(&pattern, uniquePadIds[i]);
+            }
+        }
+    }
+}

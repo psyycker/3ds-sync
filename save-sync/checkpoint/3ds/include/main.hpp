@@ -1,0 +1,53 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2026 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#ifndef MAIN_HPP
+#define MAIN_HPP
+
+#include "Screen.hpp"
+#include "logging.hpp"
+#include <atomic>
+#include <citro2d.h>
+#include <cstdio>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+inline std::shared_ptr<Screen> g_screen = nullptr;
+// A screen may request replacing g_screen with another (e.g. Main -> Settings).
+// The swap is deferred to the main loop and applied only after the current
+// screen's update() returns, so a screen never destroys itself mid-update.
+inline std::shared_ptr<Screen> g_pendingScreen = nullptr;
+inline bool g_bottomScrollEnabled              = false;
+inline float g_timer                           = 0;
+// Set by the Settings page when a change affects the main title grid or its
+// detail (cart scan, NAND saves, favorites, filters, extra folders). The main
+// screen consumes it on its next update and reloads titles once, so edits show
+// up without the user manually refreshing.
+inline bool g_titlesDirty = false;
+
+#endif

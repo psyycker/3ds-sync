@@ -1,0 +1,80 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2025 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#include "YesNoOverlay.hpp"
+#include "ModalChrome.hpp"
+#include "gfxutils.hpp"
+#include "i18n.hpp"
+
+YesNoOverlay::YesNoOverlay(
+    Screen& screen, const std::string& mtext, const std::function<void()>& callbackYes, const std::function<void()>& callbackNo)
+    : Overlay(screen), hid(2, 2)
+{
+    // Size the card to the prompt first: the button row sits on its bottom edge.
+    text      = mtext;
+    layout    = ModalChrome::fitText(text);
+    yesFunc   = callbackYes;
+    noFunc    = callbackNo;
+    buttonYes = std::make_unique<Clickable>(
+        ModalChrome::BTN_LEFT_X, layout.btnY, ModalChrome::BTN_HALF_W, ModalChrome::BTN_H, COLOR_SURFACE, COLOR_TEXT, i18n::t("common.yes"), true);
+    buttonNo = std::make_unique<Clickable>(
+        ModalChrome::BTN_RIGHT_X, layout.btnY, ModalChrome::BTN_HALF_W, ModalChrome::BTN_H, COLOR_SURFACE, COLOR_TEXT, i18n::t("common.no"), true);
+}
+
+void YesNoOverlay::draw(void) const
+{
+    ModalChrome::dim();
+    ModalChrome::drawCard(layout, COLOR_SURFACE);
+    ModalChrome::drawText(layout, text, COLOR_TEXT);
+    drawOutline(ModalChrome::BTN_LEFT_X, layout.btnY, ModalChrome::BTN_HALF_W, ModalChrome::BTN_H, 2, COLOR_TEXT2);
+    drawOutline(ModalChrome::BTN_RIGHT_X, layout.btnY, ModalChrome::BTN_HALF_W, ModalChrome::BTN_H, 2, COLOR_TEXT2);
+    buttonYes->draw(ModalChrome::BTN_SIZE, COLOR_ACCENT);
+    buttonNo->draw(ModalChrome::BTN_SIZE, COLOR_ACCENT);
+
+    const int bx = hid.index() == 0 ? ModalChrome::BTN_LEFT_X : ModalChrome::BTN_RIGHT_X;
+    drawPulsingOutline(bx + 2, layout.btnY + 2, ModalChrome::BTN_HALF_W - 4, ModalChrome::BTN_H - 4, 4, COLOR_ACCENT);
+}
+
+void YesNoOverlay::update(const InputState& input)
+{
+    hid.update(2);
+
+    hid.index(buttonYes->held() ? 0 : buttonNo->held() ? 1 : hid.index());
+    buttonYes->selected(hid.index() == 0);
+    buttonNo->selected(hid.index() == 1);
+
+    const u64 kDown = input.kDown;
+
+    // Dismiss before running the callback: the yes/no lambdas reassign
+    // currentOverlay (the only owner of this overlay), which would otherwise
+    // destroy the std::function mid-call. dismissThen copies it to the stack.
+    if (buttonYes->released() || ((kDown & HidNpadButton_A) && hid.index() == 0)) {
+        dismissThen(yesFunc);
+    }
+    else if (buttonNo->released() || (kDown & HidNpadButton_B) || ((kDown & HidNpadButton_A) && hid.index() == 1)) {
+        dismissThen(noFunc);
+    }
+}

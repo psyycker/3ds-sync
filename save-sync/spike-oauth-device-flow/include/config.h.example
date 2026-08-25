@@ -1,0 +1,7 @@
+// Copy this file to config.h (gitignored) and fill in real values from
+// Google Cloud Console -> Credentials -> your "TVs and Limited Input
+// devices" OAuth client.
+#pragma once
+
+#define GOOGLE_CLIENT_ID "YOUR_CLIENT_ID.apps.googleusercontent.com"
+#define GOOGLE_CLIENT_SECRET "YOUR_CLIENT_SECRET"

@@ -1,0 +1,165 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2026 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#ifndef CONFIGHANDLER_HPP
+#define CONFIGHANDLER_HPP
+
+#include "io.hpp"
+#include "json.hpp"
+#include "util.hpp"
+#include <switch.h>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Forward-declared, not #include "title.hpp": title.hpp includes this header,
+// so a full include here would leave sort_t undefined by the time this class
+// body needs it (whichever header is included first wins the include-guard
+// race). sort_t is a named enum with a fixed underlying type specifically so
+// this forward declaration is legal — see the comment on its definition.
+enum sort_t : u8;
+
+#define CONFIG_VERSION 5
+
+class Configuration {
+public:
+    static Configuration& getInstance(void)
+    {
+        static Configuration mConfiguration;
+        return mConfiguration;
+    }
+
+    bool filter(u64 id);
+    bool favorite(u64 id);
+    bool isFTPEnabled(void);
+    // Master switch for the USB MTP responder (browse the SD card from a PC over
+    // the charging cable). Default false; while off the worker never claims
+    // usb:ds, so it can't collide with anything else that wants it.
+    bool isMTPEnabled(void);
+    // Master switch for the wireless save-transfer feature (Send/Receive over the
+    // network). Default false; keeps the /transfer HTTP handlers unregistered for
+    // users who never use it. Parity with the 3DS transfer toggle.
+    bool isTransferEnabled(void);
+    // Whether a restore asks for a YesNo confirmation first (parity with the 3DS
+    // confirm_restore setting). Default true — a restore overwrites the save.
+    bool isConfirmRestoreEnabled(void);
+    // Skip the software-keyboard backup-name prompt and use the timestamp
+    // suggestion directly. Default false.
+    bool isQuickBackupEnabled(void);
+    // Read the whole save back after a restore and compare size + CRC32 of
+    // every file against the backup. Default true; can be disabled because it
+    // roughly doubles restore time on backups with tens of thousands of files.
+    bool isVerifyRestoreEnabled(void);
+    std::vector<std::string> additionalSaveFolders(u64 id);
+    std::vector<std::string> additionalDeviceSaveFolders(u64 id);
+    void save(void);
+    void load(void);
+    void parse(void);
+
+    // Every id currently hidden/favorited (Settings > Library reads these to
+    // build its two lists; getCompleteTitleList() supplies the id->name map).
+    std::vector<u64> hiddenIds(void);
+    std::vector<u64> favoriteIds(void);
+    // Every id with at least one additional save folder configured (Settings
+    // > Save folders). User (account) saves and device saves keep separate
+    // folder lists: an extra folder only feeds the backup list of the save
+    // kind it was configured for.
+    std::vector<u64> additionalSaveFolderIds(void);
+    std::vector<u64> additionalDeviceSaveFolderIds(void);
+
+    // Mutators. Each writes mJson and calls save() immediately — Settings has
+    // no separate "save" step; every change writes config.json synchronously.
+    void setFilter(u64 id, bool hidden);
+    void setFavorite(u64 id, bool favorite);
+    void setFTPEnabled(bool enabled);
+    void setMTPEnabled(bool enabled);
+    void setTransferEnabled(bool enabled);
+    void setConfirmRestoreEnabled(bool enabled);
+    void setQuickBackupEnabled(bool enabled);
+    void setVerifyRestoreEnabled(bool enabled);
+    void addAdditionalSaveFolder(u64 id, const std::string& path);
+    void removeAdditionalSaveFolder(u64 id, const std::string& path);
+    void addAdditionalDeviceSaveFolder(u64 id, const std::string& path);
+    void removeAdditionalDeviceSaveFolder(u64 id, const std::string& path);
+
+    // "dark" (default, only theme that renders today) or "light" (persisted,
+    // reserved for a future light theme).
+    std::string theme(void);
+    void setTheme(const std::string& theme);
+
+    // "en" (default) or "it". Selects the UI language; see i18n::setLanguage.
+    std::string language(void);
+    void setLanguage(const std::string& language);
+
+    // Last "ip:port" entered in the wireless-transfer send prompt. Prefilled into
+    // the keyboard next time; not surfaced in Settings. Empty until the first send.
+    std::string lastTransferAddress(void);
+    void setLastTransferAddress(const std::string& address);
+
+    // Fixed PIN the wireless receiver arms itself with, as 4 ASCII digits. Empty
+    // (the default) means a fresh random PIN per receive
+    std::string defaultReceivePin(void);
+    void setDefaultReceivePin(const std::string& pin);
+
+    // Default/current title-grid sort mode. Persisted so it survives a
+    // relaunch; the grid's X-button cycle and the Settings "Default sort"
+    // spinner both read/write this same setting through TitleCatalog.
+    sort_t sortMode(void);
+    void setSortMode(sort_t mode);
+
+    const std::string BASEPATH = "/switch/Checkpoint/config.json";
+
+private:
+    Configuration(void);
+    ~Configuration(void);
+
+    void store(void);
+
+    // Shared body of the user/device folder mutators: `map` is the parsed
+    // cache, `key` the config.json object both stay in sync with.
+    void addFolder(std::unordered_map<u64, std::vector<std::string>>& map, const char* key, u64 id, const std::string& path);
+    void removeFolder(std::unordered_map<u64, std::vector<std::string>>& map, const char* key, u64 id, const std::string& path);
+
+    Configuration(Configuration const&)  = delete;
+    void operator=(Configuration const&) = delete;
+
+    nlohmann::json mJson;
+    bool FTPEnabled;
+    bool mMTPEnabled;
+    bool mTransferEnabled;
+    bool mConfirmRestore;
+    bool mQuickBackup;
+    bool mVerifyRestore;
+    std::unordered_set<u64> mFilterIds, mFavoriteIds;
+    std::unordered_map<u64, std::vector<std::string>> mAdditionalSaveFolders, mAdditionalDeviceSaveFolders;
+    std::string mTheme;
+    std::string mLanguage;
+    std::string mLastTransferAddress; // last "ip:port" sent to; prefills the send keyboard
+    std::string mDefaultReceivePin;   // "" = random PIN per receive
+    sort_t mSortMode;
+};
+
+#endif

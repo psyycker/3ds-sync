@@ -1,0 +1,25 @@
+{
+  "filter": [
+
+  ],
+  "favorites": [
+
+  ],
+  "additional_save_folders": {
+
+  },
+  "additional_device_save_folders": {
+
+  },
+  "ftp-enabled": false,
+  "mtp-enabled": false,
+  "confirm-restore": true,
+  "quick-backup": false,
+  "verify-restore": false,
+  "theme": "dark",
+  "language": "en",
+  "sort-mode": "alpha",
+  "last-transfer-address": "",
+  "default-receive-pin": "",
+  "version": 6
+}

@@ -1,0 +1,63 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2025 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#ifndef KEYBOARDMANAGER_HPP
+#define KEYBOARDMANAGER_HPP
+
+#include "util.hpp"
+#include <3ds.h>
+#include <string>
+
+class KeyboardManager {
+public:
+    static KeyboardManager& get(void)
+    {
+        static KeyboardManager mSingleton;
+        return mSingleton;
+    }
+
+    KeyboardManager(KeyboardManager const&) = delete;
+    void operator=(KeyboardManager const&)  = delete;
+
+    std::u16string keyboard(const std::string& suggestion);
+    // Free-form text prompt with a custom hint and length cap; returns the raw
+    // input (no forbidden-character filtering), empty on cancel.
+    std::string text(const std::string& suggestion, const std::string& hint, size_t maxLen);
+    // On-screen numeric keypad that only accepts values in [min, max] (a filter
+    // callback keeps the keyboard open on out-of-range input). Returns the entered
+    // value, or -1 on cancel.
+    int numpad(const std::string& hint, int min, int max);
+
+    static const size_t CUSTOM_PATH_LEN = 20;
+
+private:
+    KeyboardManager(void);
+    virtual ~KeyboardManager(void) {}
+
+    SwkbdState mSwkbd;
+};
+
+#endif

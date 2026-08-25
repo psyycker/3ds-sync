@@ -1,0 +1,113 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2025 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#ifndef TITLE_HPP
+#define TITLE_HPP
+
+#include "archive.hpp"
+#include "configuration.hpp"
+#include "directory.hpp"
+#include "fsstream.hpp"
+#include "gui.hpp"
+#include "io.hpp"
+#include "smdh.hpp"
+#include "spi.hpp"
+#include "util.hpp"
+#include <algorithm>
+#include <citro2d.h>
+#include <string>
+#include <vector>
+
+extern "C" {
+#include "sha256.h"
+}
+
+#define TID_PKSM 0x000400000EC10000
+
+class BackupTarget;
+
+class Title {
+public:
+    ~Title(void);
+
+    // Vend a backup facet (Save or Extdata) of this Title. The returned target
+    // holds a reference back to this Title, so keep it shorter-lived.
+    BackupTarget backup(BackupKind kind);
+
+    bool accessibleSave(void);
+    bool accessibleExtdata(void);
+    bool isGBAVC(void);
+    bool isDSiWare(void);
+    FS_CardType cardType(void);
+    std::vector<std::u16string> extdata(void);
+    u32 extdataId(void);
+    std::u16string extdataPath(void);
+    std::u16string fullExtdataPath(size_t index);
+    u32 highId(void);
+    u64 id(void) const;
+    void load(void);
+    void load(u64 id, u8* productCode, bool accessibleSave, bool saveIsGBA, bool accessibleExtdata, std::string shortDescription,
+        std::string longDescription, std::u16string savePath, std::u16string extdataPath, FS_MediaType media, FS_CardType cardType, CardType card);
+    const std::string& longDescription(void) const;
+    u32 lowId(void);
+    FS_MediaType mediaType(void);
+    std::string mediaTypeString(void);
+    void refreshDirectories(void);
+    std::u16string savePath(void);
+    std::u16string fullSavePath(size_t index);
+    std::vector<std::u16string> saves(void);
+    const std::string& shortDescription(void) const;
+    CardType SPICardType(void);
+    u32 uniqueId(void);
+
+    char productCode[16];
+
+private:
+    // Fill `names`/`fullPaths` with the "New..." entry, the sorted backup folders
+    // under `basePath`, then any configured additional folders. Shared by the
+    // save and extdata halves of refreshDirectories (descending = save order).
+    void loadBackupList(const std::u16string& basePath, const std::vector<std::u16string>& additionalFolders, bool descending,
+        std::vector<std::u16string>& names, std::vector<std::u16string>& fullPaths);
+
+    bool mAccessibleSave;
+    bool mAccessibleExtdata;
+    bool mGBA;
+    std::string mShortDescription;
+    std::string mLongDescription;
+    std::u16string mSavePath;
+    std::u16string mExtdataPath;
+
+    std::vector<std::u16string> mSaves;
+    std::vector<std::u16string> mFullSavePaths;
+    std::vector<std::u16string> mExtdata;
+    std::vector<std::u16string> mFullExtdataPaths;
+    u64 mId;
+    FS_MediaType mMedia;
+    FS_CardType mCard;
+    CardType mCardType;
+};
+
+#endif

@@ -1,0 +1,26 @@
+{
+  "filter": [
+
+  ],
+  "favorites": [
+
+  ],
+  "additional_save_folders": {
+
+  },
+  "additional_extdata_folders": {
+
+  },
+  "nand_saves": false,
+  "dsiware_saves": false,
+  "scan_cart": false,
+  "transfer_enabled": false,
+  "confirm_restore": true,
+  "ftp-enabled": false,
+  "quick_backup": false,
+  "theme": "dark",
+  "language": "en",
+  "last_transfer_address": "",
+  "default_receive_pin": "",
+  "version": 6
+}
